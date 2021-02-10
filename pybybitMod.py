@@ -111,6 +111,102 @@ D_ORDER_BOOK = '/orderBook'
 D_L2 = '/L2'
 
 class Bybit():
+    URL_REST_MAIN = URL_REST_MAIN
+    URL_REST_TEST = URL_REST_TEST
+    URL_WS_MAIN = URL_WS_MAIN
+    URL_WS_TEST = URL_WS_TEST
+    HEADER = HEADER
+
+    CH_WS_TRADE = CH_WS_TRADE
+    CH_WS_INST = CH_WS_INST
+    CH_WS_BOOK = CH_WS_BOOK
+    CH_WS_POS = CH_WS_POS
+    CH_WS_EXEC = CH_WS_EXEC
+    CH_WS_ORDER = CH_WS_ORDER
+    RQ_POST = RQ_POST
+    RQ_GET = RQ_GET
+
+    EGS = EGS
+
+    ID = ID
+    TPC = TPC
+    SNAP_SHOT = SNAP_SHOT
+    TYP = TYP
+    INS = INS
+    UPD = UPD
+    DEL = DEL
+    DAT = DAT
+
+    PV_SUBSC = PV_SUBSC
+
+    PL_OP = PL_OP
+    PL_AUTH = PL_AUTH
+    PL_ARGS = PL_ARGS
+    PL_SIGN = PL_SIGN
+    PL_API_KEY = PL_API_KEY
+    PL_TS = PL_TS
+    PL_RECEIVE_WINDOW = PL_RECEIVE_WINDOW
+
+    PL_ID = PL_ID
+    PL_SIDE = PL_SIDE
+    PL_SYM = PL_SYM
+    PL_TYPE = PL_TYPE
+    PL_QTY = PL_QTY
+    PL_PRICE = PL_PRICE
+    PL_TIF = PL_TIF
+    PL_TP = PL_TP
+    PL_SL = PL_SL
+    PL_OL_ID = PL_OL_ID
+    PL_SORT = PL_SORT
+    PL_ORDER = PL_ORDER
+    PL_PAGE = PL_PAGE
+    PL_LIMIT = PL_LIMIT
+    PL_STAT = PL_STAT
+    PL_BASE_PRICE = PL_BASE_PRICE
+    PL_STOP_PX = PL_STOP_PX
+    PL_COT = PL_COT
+    PL_REDUCE_ONLY = PL_REDUCE_ONLY
+    PL_STOP_ID = PL_STOP_ID
+    PL_LEVERAGE = PL_LEVERAGE
+    PL_MARGIN = PL_MARGIN
+    PL_INTERVAL = PL_INTERVAL
+    PL_FROM = PL_FROM
+    PL_RESULT = PL_RESULT
+
+    TIF_GTC = TIF_GTC
+    TIF_PO = TIF_PO
+
+    BUY = BUY
+    SELL = SELL
+
+    UTF8 = UTF8
+
+    D_OPEN_API = D_OPEN_API
+    D_USER = D_USER
+    D_POSITION = D_POSITION
+    D_V2 = D_V2
+
+    D_ORDER = D_ORDER
+    D_STOP_ORDER = D_STOP_ORDER
+    D_CHG_POS_MARGIN = D_CHG_POS_MARGIN
+    D_FUNDING = D_FUNDING
+    D_PUB = D_PUB
+    D_PRV = D_PRV
+
+    D_LEVERAGE = D_LEVERAGE
+    D_CREATE = D_CREATE
+    D_LIST = D_LIST
+    D_CANCEL = D_CANCEL
+    D_SAVE = D_SAVE
+    D_PFRATE = D_PFRATE
+    D_PFUNDING = D_PFUNDING
+    D_PREDF = D_PREDF
+    D_EXEC = D_EXEC
+    D_SYM = D_SYM
+    D_KLINE = D_KLINE
+    D_ORDER_BOOK = D_ORDER_BOOK
+    D_L2 = D_L2
+
     def __init__(self, api_key, secret, symbol, ws=True, test=False):
         self.api_key = api_key
         self.secret = secret
@@ -329,3 +425,4 @@ class Bybit():
     def cancel_active_order_v2(self, order_id=None):
         payload = {PL_ID: order_id}
         return self._request(RQ_POST, D_V2 + D_PRV + D_ORDER + D_CANCEL, payload=payload)
+
