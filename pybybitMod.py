@@ -6,14 +6,13 @@ from time import time, sleep
 import urllib.parse
 from threading import Thread
 from collections import deque
+from pprint import pprint
+import traceback
 
 from requests import Request, Session
 from requests.exceptions import HTTPError
 from websocket import WebSocketApp
 import pandas as pd
-from pprint import pprint
-
-import traceback
 
 URL_REST_MAIN = 'https://api.bybit.com'
 URL_REST_TEST = 'https://api-testnet.bybit.com'
