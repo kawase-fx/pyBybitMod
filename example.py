@@ -28,9 +28,9 @@ if __name__ == '__main__':
 
         # オーダーを送信
         print('Sending Order... --------------------------------------------------')
-        order_resp = bybit.place_active_order(side='Buy', order_type='limit', qty=100, price=best_buy - 100, time_in_force='PostOnly')
+        order_resp = bybit.place_active_order(side='Buy', order_type='Limit', qty=1, price=best_buy - 100, time_in_force='PostOnly')
         print(json.dumps(order_resp, indent=2))
-        order_id = order_resp['result']['id'] if order_resp['result'] else None
+        order_id = order_resp['result']['order_id'] if order_resp['result'] else None
 
         sleep(5.0)
 
