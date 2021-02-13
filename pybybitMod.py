@@ -2,17 +2,20 @@ import sys
 import hashlib
 import hmac
 import json
-from time import time, sleep
+from time import time,sleep
 import urllib.parse
 from threading import Thread
 from collections import deque
-from pprint import pprint
+from pprint import pprint,pformat
 import traceback
 
-from requests import Request, Session
+from requests import Request,Session
 from requests.exceptions import HTTPError
 from websocket import WebSocketApp
 import pandas as pd
+
+class RESTResultError(Exception):
+    pass
 
 class Constants():
     ENGINE = 'python'
@@ -86,6 +89,7 @@ class ENTRY_POINT():
     CREATE = '/create'
     LIST = '/list'
     CANCEL = '/cancel'
+    CANCEL_ALL = '/cancelAll'
     SAVE = '/save'
     PFRATE = '/prev-funding-rate'
     PFUNDING = '/prev-funding'
@@ -142,7 +146,7 @@ class Properties():
 P = Properties()
 
 class Bybit():
-    def __init__(self, api_key, secret, symbol, ws=True, test=False):
+    def __init__(self,api_key,secret,symbol,ws=True,test=False):
         self.api_key = api_key
         self.secret = secret
 
@@ -161,87 +165,104 @@ class Bybit():
 
     # WebSocket
     def _connect(self):
-        self.ws = WebSocketApp(url=self.ws_url, on_open=self._on_open, on_message=self._on_message)
-        self.ws_data = {WS.CH.TRADE + str(self.symbol): deque(maxlen=200),WS.CH.INST + str(self.symbol): {},WS.CH.BOOK + str(self.symbol): pd.DataFrame(),WS.CH.POS: {},WS.CH.EXEC: deque(maxlen=200),WS.CH.ORDER: deque(maxlen=200)}
+        self.ws = WebSocketApp(url=self.ws_url,on_open=self._on_open,on_message=self._on_message)
+        self.ws_data = {WS.CH.TRADE+self.symbol: deque(maxlen=200),WS.CH.INST+self.symbol: {},WS.CH.BOOK+self.symbol: pd.DataFrame(),WS.CH.POS: {},WS.CH.EXEC: deque(maxlen=200),WS.CH.ORDER: deque(maxlen=200)}
         positions = self.get_position_list()
         if positions!=None:
             self.ws_data[WS.CH.POS].update(positions)
 
-        Thread(target=self.ws.run_forever, daemon=True).start()
+        Thread(target=self.ws.run_forever,daemon=True).start()
 
     def _send(self,args):
         #pprint(args)
         self.ws.send(json.dumps(args))
 
     def _sign(self,param_str):
-        return hmac.new(self.secret.encode(Constants.UTF8), param_str.encode(Constants.UTF8), hashlib.sha256).hexdigest()
+        return hmac.new(self.secret.encode(Constants.UTF8),param_str.encode(Constants.UTF8),hashlib.sha256).hexdigest()
 
     def _ts(self,offsetMs):
         return int(time()*1000+offsetMs)
+
+    def _normalize(self,data_set):
+        return pd.json_normalize(data_set,errors='ignore')
+
+    def _delete(self,topic,target_list):
+        return self.ws_data[topic].drop(index=target_list,errors='ignore')
+
+    def _update(self,topic,target_list):
+        self.ws_data[topic].update(target_list,errors='ignore')
+        self.ws_data[topic] = self.ws_data[topic].sort_index(ascending=False)
+
+    def _insert(self,topic,target_list):
+        self.ws_data[topic].update(target_list,errors='ignore')
+        self.ws_data[topic] = self.ws_data[topic].sort_index(ascending=False)
+
+    def _set_snap_shot(self,topic,data_set):
+        self.ws_data[topic] = self._normalize(data_set).set_index(Constants.ID).sort_index(ascending=False)
+
+    def _append_message(self,topic,data_set):
+        self.ws_data[topic].append(data_set)
+
+    def _set_message(self,topic,data_set):
+        self.ws_data[topic].update(data_set,errors='ignore')
 
     def _on_open(self):
         timestamp = self._ts(1000)
         param_str = REST.GET+E.REALTIME+str(timestamp)
         sign = self._sign(param_str)
         self._send({P.OP: P.AUTH,P.ARGS: [self.api_key,timestamp,sign]})
-        self._send({P.OP: P.SUBSC,P.ARGS: [WS.CH.TRADE+str(self.symbol),WS.CH.BOOK+str(self.symbol),WS.CH.POS,WS.CH.EXEC,WS.CH.ORDER]})
+        self._send({P.OP: P.SUBSC,P.ARGS: [WS.CH.TRADE+self.symbol,WS.CH.BOOK+self.symbol,WS.CH.POS,WS.CH.EXEC,WS.CH.ORDER]})
 
-    def _on_message(self, incoming):
+    def _on_message(self,incoming):
         message = json.loads(incoming)
         topic = message.get(Constants.TPC)
-        if topic == WS.CH.BOOK + str(self.symbol):
+        if topic == WS.CH.BOOK+self.symbol:
             data_set = message[Constants.DAT]
-            if message[Constants.TYP] == Constants.SNAP_SHOT:
-                pprint(WS.CH.BOOK + str(self.symbol)+':'+Constants.SNAP_SHOT)
-                self.ws_data[topic] = pd.json_normalize(data_set).set_index(Constants.ID).sort_index(ascending=False)
+            if len(data_set) == 400:
+                self._set_snap_shot(topic,data_set)
             else:
                 if len(data_set[Constants.DEL]) != 0:
-                    drop_list = [x[Constants.ID] for x in data_set[Constants.DEL]]
-                    self.ws_data[topic].drop(index=drop_list)
+                    self._delete(topic,[x[Constants.ID] for x in data_set[Constants.DEL]])
                 elif len(data_set[Constants.UPD]) != 0:
-                    update_list = pd.json_normalize(data_set[Constants.UPD]).set_index(Constants.ID)
-                    self.ws_data[topic].update(update_list)
-                    self.ws_data[topic] = self.ws_data[topic].sort_index(ascending=False)
+                    self._update(topic,self._normalize(data_set[Constants.UPD]).set_index(Constants.ID))
                 elif len(data_set[Constants.INS]) != 0:
-                    insert_list = pd.json_normalize(data_set[Constants.INS]).set_index(Constants.ID)
-                    self.ws_data[topic].update(insert_list)
-                    self.ws_data[topic] = self.ws_data[topic].sort_index(ascending=False)
+                    self._insert(topic,self._normalize(data_set[Constants.INS]).set_index(Constants.ID))
 
-        elif topic in [WS.CH.TRADE + str(self.symbol), WS.CH.EXEC, WS.CH.ORDER]:
-            self.ws_data[topic].append(message[Constants.DAT][0])
-            if topic == WS.CH.TRADE + str(self.symbol):
+        elif topic in [WS.CH.TRADE+self.symbol,WS.CH.EXEC,WS.CH.ORDER]:
+            self._append_message(topic,message[Constants.DAT][0])
+            if topic == WS.CH.TRADE+self.symbol:
                 self.last_trade_price = float(message[Constants.DAT][-1][P.PRICE])
 
-        elif topic in [WS.CH.INST + str(self.symbol), WS.CH.POS]:
-            self.ws_data[topic].update(message[Constants.DAT][0])
+        elif topic in [WS.CH.INST+self.symbol,WS.CH.POS]:
+            self._set_message(topic,message[Constants.DAT][0])
 
     def get_trade(self):
         if not self.ws: return None
-        return self.ws_data[WS.CH.TRADE + str(self.symbol)]
+        return self.ws_data[WS.CH.TRADE+self.symbol]
 
     def get_instrument(self):
         if not self.ws: return None
-        while len(self.ws_data[WS.CH.INST + str(self.symbol)]) != 4:
+        while len(self.ws_data[WS.CH.INST+self.symbol]) != 4:
             sleep(1.0)
-        return self.ws_data[WS.CH.INST + str(self.symbol)]
+        return self.ws_data[WS.CH.INST+self.symbol]
 
-    def get_orderbook(self, side=None):
+    def get_orderbook(self,side=None):
         if not self.ws: return None
-        topic = WS.CH.BOOK + str(self.symbol)
+        topic = WS.CH.BOOK+self.symbol
         if self.ws_data[topic].empty:
             recv_data = self.orderbookL2(self.symbol)[P.RESULT]
             try:
-                self.ws_data[topic] = pd.json_normalize(recv_data).set_index(P.PRICE).sort_index(ascending=False)
+                self.ws_data[topic] = self._normalize(recv_data).set_index(P.PRICE).sort_index(ascending=False)
             except Exception:
                 pprint(recv_data)
                 pprint(traceback.format_exc())
 
         if side == SIDE.SELL:
-            orderbook = self.ws_data[topic].query('side.str.contains("Sell")', engine=Constants.ENGINE)
+            orderbook = self.ws_data[topic].query('side.str.contains("Sell")',engine=Constants.ENGINE)
         elif side == SIDE.BUY:
-            orderbook = self.ws_data[topic].query('side.str.contains("Buy")', engine=Constants.ENGINE)
+            orderbook = self.ws_data[topic].query('side.str.contains("Buy")',engine=Constants.ENGINE)
         else:
-            orderbook = self.ws_data[WS.CH.BOOK + str(self.symbol)]
+            orderbook = self.ws_data[WS.CH.BOOK+self.symbol]
         return orderbook
 
     def get_position(self):
@@ -257,12 +278,12 @@ class Bybit():
         return self.ws_data[WS.CH.ORDER]
 
     # HTTP API
-    def _request(self, method, path, payload):
+    def _request(self,method,path,payload):
         payload[P.API_KEY] = self.api_key
         payload[P.TS] = self._ts(-100000)
         payload[P.RECEIVE_WINDOW] = 1000 * 500
         payload = dict(sorted(payload.items()))
-        for k, v in list(payload.items()):
+        for k,v in list(payload.items()):
             if v is None:
                 del payload[k]
 
@@ -277,7 +298,7 @@ class Bybit():
             query = None
             body = json.dumps(payload)
 
-        req = Request(method, self.url + path, data=body, params=query)
+        req = Request(method,self.url+path,data=body,params=query)
         prepped = self.s.prepare_request(req)
 
         resp = None
@@ -290,77 +311,88 @@ class Bybit():
         try:
             return resp.json()
         except json.decoder.JSONDecodeError as e:
-            pprint('json.decoder.JSONDecodeError: ', e)
+            pprint('json.decoder.JSONDecodeError: ',e)
             return resp.text
 
-    def get_ticker(self, symbol=None):
+    def get_ticker(self,symbol=None):
         payload = {P.SYM: symbol if symbol else self.symbol,}
-        return self._request(REST.GET, E.V2 + E.PUB + E.TICKER, payload=payload)
+        return self._request(REST.GET,E.V2+E.PUB+E.TICKER,payload=payload)
 
-    def place_conditional_order(self, side=None, symbol=None, order_type=None, qty=None, price=None, base_price=None, stop_px=None, time_in_force=TIME_IN_FORCE.GOOD_TILL_CANCEL,close_on_trigger=None, reduce_only=None, order_link_id=None):
+    def place_conditional_order(self,side=None,symbol=None,order_type=None,qty=None,price=None,base_price=None,stop_px=None,time_in_force=TIME_IN_FORCE.GOOD_TILL_CANCEL,close_on_trigger=None,reduce_only=None,order_link_id=None):
         payload = {P.SIDE: side,P.SYM: symbol if symbol else self.symbol,P.TYPE: order_type,P.QTY: qty,P.PRICE: price,P.BASE_PRICE: base_price,P.STOP_PX: stop_px,P.TIF: time_in_force,P.COT: close_on_trigger,P.REDUCE_ONLY: reduce_only,P.OL_ID: order_link_id}
-        return self._request(REST.POST, E.OPEN_API + E.STOP_ORDER + E.CANCEL, payload=payload)
+        return self._request(REST.POST,E.OPEN_API+E.STOP_ORDER+E.CANCEL,payload=payload)
 
-    def get_conditional_order(self, stop_order_id=None, order_link_id=None, symbol=None, sort=None, order=None, page=None,limit=None):
+    def get_conditional_order(self,stop_order_id=None,order_link_id=None,symbol=None,sort=None,order=None,page=None,limit=None):
         payload = {P.STOP_ID: stop_order_id,P.OL_ID: order_link_id,P.SYM: symbol if symbol else self.symbol,P.SORT: sort,P.ORDER: order,P.PAGE: page,P.LIMIT: limit}
-        return self._request(REST.GET, E.OPEN_API + E.STOP_ORDER + E.LIST, payload=payload)
+        return self._request(REST.GET,E.OPEN_API+E.STOP_ORDER+E.LIST,payload=payload)
 
-    def cancel_conditional_order(self, order_id=None):
-        return self._request(REST.POST, E.OPEN_API + E.STOP_ORDER + E.CANCEL, payload={P.ID: order_id})
+    def cancel_conditional_order(self,order_id=None):
+        return self._request(REST.POST,E.OPEN_API+E.STOP_ORDER+E.CANCEL,payload={P.ID: order_id})
 
     def get_leverage(self):
-        return self._request(REST.GET, E.USER + E.LEVERAGE, payload={})
+        return self._request(REST.GET,E.USER+E.LEVERAGE,payload={})
 
-    def change_leverage(self, symbol=None, leverage=None):
+    def change_leverage(self,symbol=None,leverage=None):
         payload = {P.SYM: symbol if symbol else self.symbol,P.LEVERAGE: leverage}
-        return self._request(REST.POST, E.USER + E.LEVERAGE + E.SAVE, payload=payload)
+        return self._request(REST.POST,E.USER+E.LEVERAGE+E.SAVE,payload=payload)
 
     def get_position_list(self):
         payload = {P.SYM: self.symbol}
-        return self._request(REST.GET, E.POSITION + E.LIST, payload=payload)[P.RESULT][-1]
+        return self._request(REST.GET,E.POSITION+E.LIST,payload=payload)[P.RESULT][-1]
 
-    def change_position_margin(self, symbol=None, margin=None):
+    def change_position_margin(self,symbol=None,margin=None):
         payload = {P.SYM: symbol if symbol else self.symbol,P.MARGIN: margin}
-        return self._request(REST.POST, E.POSITION + E.CHG_POS_MARGIN, payload=payload)
+        return self._request(REST.POST,E.POSITION+E.CHG_POS_MARGIN,payload=payload)
 
-    def get_prev_funding_rate(self, symbol=None):
+    def get_prev_funding_rate(self,symbol=None):
         payload = {P.SYM: symbol if symbol else self.symbol,}
-        return self._request(REST.GET, E.OPEN_API + E.FUNDING + E.PFRATE, payload=payload)
+        return self._request(REST.GET,E.OPEN_API+E.FUNDING+E.PFRATE,payload=payload)
 
-    def get_prev_funding(self, symbol=None):
+    def get_prev_funding(self,symbol=None):
         payload = {P.SYM: symbol if symbol else self.symbol,}
-        return self._request(REST.GET, E.OPEN_API + E.FUNDING + E.PFUNDING, payload=payload)
+        return self._request(REST.GET,E.OPEN_API+E.FUNDING+E.PFUNDING,payload=payload)
 
-    def get_predicted_funding(self, symbol=None):
+    def get_predicted_funding(self,symbol=None):
         payload = {P.SYM: symbol if symbol else self.symbol,}
-        return self._request(REST.GET, E.OPEN_API + E.FUNDING + E.PREDF, payload=payload)
+        return self._request(REST.GET,E.OPEN_API+E.FUNDING+E.PREDF,payload=payload)
 
-    def get_my_execution(self, order_id=None):
+    def get_my_execution(self,order_id=None):
         payload = {P.ID: order_id}
-        return self._request(REST.GET, E.V2 + E.PRV + E.EXEC + E.LIST, payload=payload)
+        return self._request(REST.GET,E.V2+E.PRV+E.EXEC+E.LIST,payload=payload)
 
     def symbols(self):
-        return self._request(REST.GET, E.V2 + E.PUB + E.SYMBOLS, payload={})
+        return self._request(REST.GET,E.V2+E.PUB+E.SYMBOLS,payload={})
 
-    def orderbookL2(self, symbol=None):
-        return self._request(REST.GET, E.V2 + E.PUB + E.ORDER_BOOK + E.L2, payload={P.SYM: symbol if symbol else self.symbol})
+    def orderbookL2(self,symbol=None):
+        return self._request(REST.GET,E.V2+E.PUB+E.ORDER_BOOK+E.L2,payload={P.SYM: symbol if symbol else self.symbol})
 
-    def kline(self, symbol=None, interval=None, _from=None, limit=None):
+    def kline(self,symbol=None,interval=None,_from=None,limit=None):
         payload = {P.SYM: symbol if symbol else self.symbol,P.INTERVAL: interval,P.FROM: _from,P.LIMIT: limit}
-        return self._request(REST.GET, E.V2 + E.PUB + E.KLINE + E.LIST, payload=payload)
+        return self._request(REST.GET,E.V2+E.PUB+E.KLINE+E.LIST,payload=payload)
 
     def place_active_order(self,side=None,order_type=None,qty=None,price=None,time_in_force=TIME_IN_FORCE.GOOD_TILL_CANCEL,order_link_id=None):
         payload = {P.SYM: self.symbol,P.SIDE: side,P.TYPE: order_type,P.QTY: qty,P.PRICE: price,P.TIF: time_in_force,P.OL_ID: order_link_id}
-        return self._request(REST.POST, E.V2 + E.PRV + E.ORDER + E.CREATE, payload=payload)
+        return self._request(REST.POST,E.V2+E.PRV+E.ORDER+E.CREATE,payload=payload)
 
-    def cancel_active_order(self, order_id=None):
-        r = self._request(REST.POST, E.V2 + E.PRV + E.ORDER + E.CANCEL, payload={P.SYM:self.symbol,P.ID: order_id})
+    def cancel_active_order(self,order_id=None):
+        r = self._request(REST.POST,E.V2+E.PRV+E.ORDER+E.CANCEL,payload={P.SYM:self.symbol,P.ID:order_id})
         if P.RESULT in r:
             return r[P.RESULT]
         else:
-            pprint(r)
-            return r
+            raise RESTResultError(pformat(r))
+
+    def cancel_all_active_order(self):
+        r = self._request(REST.POST,E.V2+E.PRV+E.ORDER+E.CANCEL_ALL,payload={P.SYM:self.symbol})
+        if P.RESULT in r:
+            if r[P.RESULT] == None: return []
+            return r[P.RESULT]
+        else:
+            raise RESTResultError(pformat(r))
 
     def get_active_order(self,order_status=None,direction=None,limit=None,cursor=None):
         payload = {P.SYM:self.symbol,P.STAT:order_status,P.DIRECTION:direction,P.LIMIT:limit,P.CURSOR:cursor}
-        return self._request(REST.GET, E.V2 + E.PRV + E.ORDER + E.LIST, payload=payload)[P.RESULT][Constants.DAT]
+        r = self._request(REST.GET,E.V2+E.PRV+E.ORDER+E.LIST,payload=payload)
+        if P.RESULT in r:
+            return r[P.RESULT][Constants.DAT]
+        else:
+            raise RESTResultError(pformat(r))

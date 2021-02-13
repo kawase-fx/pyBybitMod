@@ -18,7 +18,7 @@ https://raw.githubusercontent.com/kawase-fx/pyBybitMod/main/pybybitMod.py
 ファイルの名前は何でもいいです。次の内容でテキストファイルを準備します。
 * 1行目はAPIキー
 * 2行目はAPIシークレット
-* 3行目はテストネットかどうか
+* 3行目はテストネットならTrue、でなければFalse
 * 4行目は商品(BTCUSDとか)
 を書き込んでおきます。
 
