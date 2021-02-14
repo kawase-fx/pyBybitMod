@@ -17,6 +17,9 @@ import pandas as pd
 class RESTResultError(Exception):
     pass
 
+class RESTOverLimitError(Exception):
+    pass
+
 class Constants():
     ENGINE = 'python'
     UTF8 = 'utf-8'
@@ -38,6 +41,11 @@ class REST():
     TEST = 'https://api-testnet.bybit.com'
     POST = 'POST'
     GET = 'GET'
+    OK = 0
+    class ERROR():
+        TOO_MANY_VISITS = 10006
+        ORDER_ALREADY_CANCELED = 30037
+        FILLED_CANNOT_CANCEL = 30032
 
 class WS():
     MAIN = 'wss://stream.bybit.com/realtime'
@@ -143,6 +151,15 @@ class Properties():
     FROM = 'from'
     RESULT = 'result'
 
+    EXT_CODE = 'ext_code'
+    EXT_INFO = 'ext_info'
+    RATE_LIMIT = 'rate_limit'
+    RATE_LIMIT_RESET_MS= 'rate_limit_reset_ms'
+    RATE_LIMIT_STATUS = 'rate_limit_status'
+    RET_CODE = 'ret_code'
+    RET_MSG = 'ret_msg'
+    TIME_NOW = 'time_now'
+
 P = Properties()
 
 class Bybit():
@@ -157,7 +174,7 @@ class Bybit():
         self.url = REST.MAIN if not test else REST.TEST
         self.ws_url = WS.MAIN if not test else WS.TEST
 
-        self.last_trade_price = float(self.get_ticker(self.symbol)[P.RESULT][-1][P.LAST_PRICE])
+        self.last_trade_price = float(self.get_ticker(self.symbol)[-1][P.LAST_PRICE])
 
         self.ws = ws
         if ws:
@@ -174,7 +191,6 @@ class Bybit():
         Thread(target=self.ws.run_forever,daemon=True).start()
 
     def _send(self,args):
-        #pprint(args)
         self.ws.send(json.dumps(args))
 
     def _sign(self,param_str):
@@ -309,7 +325,21 @@ class Bybit():
             pprint(e)
 
         try:
-            return resp.json()
+            r=resp.json()
+
+            if P.RATE_LIMIT_STATUS in r:
+                self.rate_limit_status = r[P.RATE_LIMIT_STATUS]
+                self.rate_limit = r[P.RATE_LIMIT]
+
+            if P.RESULT not in r: raise RESTResultError(r)
+            if r[P.RET_CODE]!=REST.OK:
+                if r[P.RET_CODE]==REST.ERROR.TOO_MANY_VISITS:
+                    raise RESTOverLimitError(r)
+                else:
+                    raise RESTResultError(r)
+            else:
+                return r[P.RESULT]
+
         except json.decoder.JSONDecodeError as e:
             pprint('json.decoder.JSONDecodeError: ',e)
             return resp.text
@@ -337,8 +367,8 @@ class Bybit():
         return self._request(REST.POST,E.USER+E.LEVERAGE+E.SAVE,payload=payload)
 
     def get_position_list(self):
-        payload = {P.SYM: self.symbol}
-        return self._request(REST.GET,E.POSITION+E.LIST,payload=payload)[P.RESULT][-1]
+        p = self._request(REST.GET,E.POSITION+E.LIST,payload={P.SYM: self.symbol})
+        return p[-1] if p!=[] else []
 
     def change_position_margin(self,symbol=None,margin=None):
         payload = {P.SYM: symbol if symbol else self.symbol,P.MARGIN: margin}
@@ -375,24 +405,12 @@ class Bybit():
         return self._request(REST.POST,E.V2+E.PRV+E.ORDER+E.CREATE,payload=payload)
 
     def cancel_active_order(self,order_id=None):
-        r = self._request(REST.POST,E.V2+E.PRV+E.ORDER+E.CANCEL,payload={P.SYM:self.symbol,P.ID:order_id})
-        if P.RESULT in r:
-            return r[P.RESULT]
-        else:
-            raise RESTResultError(pformat(r))
+        return self._request(REST.POST,E.V2+E.PRV+E.ORDER+E.CANCEL,payload={P.SYM:self.symbol,P.ID:order_id})
 
     def cancel_all_active_order(self):
-        r = self._request(REST.POST,E.V2+E.PRV+E.ORDER+E.CANCEL_ALL,payload={P.SYM:self.symbol})
-        if P.RESULT in r:
-            if r[P.RESULT] == None: return []
-            return r[P.RESULT]
-        else:
-            raise RESTResultError(pformat(r))
+        return self._request(REST.POST,E.V2+E.PRV+E.ORDER+E.CANCEL_ALL,payload={P.SYM:self.symbol})
 
     def get_active_order(self,order_status=None,direction=None,limit=None,cursor=None):
-        payload = {P.SYM:self.symbol,P.STAT:order_status,P.DIRECTION:direction,P.LIMIT:limit,P.CURSOR:cursor}
-        r = self._request(REST.GET,E.V2+E.PRV+E.ORDER+E.LIST,payload=payload)
-        if P.RESULT in r:
-            return r[P.RESULT][Constants.DAT]
-        else:
-            raise RESTResultError(pformat(r))
+        r=self._request(REST.GET,E.V2+E.PRV+E.ORDER+E.LIST,payload={P.SYM:self.symbol,P.STAT:order_status,P.DIRECTION:direction,P.LIMIT:limit,P.CURSOR:cursor})
+        if Constants.DAT not in r: raise RESTResultError(r)
+        return r[Constants.DAT]
